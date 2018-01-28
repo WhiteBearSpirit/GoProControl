@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>GoPro Control: Infinite Timelapse</title>
+  <script type="text/javascript" src="jquery-3.3.1.min.js"></script>
+  <style>
+  	body {
+  		margin: 0 auto;
+  		padding: 6px;
+  		min-width: 460px;
+  		max-width: 1200px;
+  		font-size: 20px;
+  	}
+  	.container {
+  		flex: 1 1 19em;
+  		border: 2px solid grey;
+  		border-radius: 20px;
+  		padding: 25px;
+  		margin: 8px;
+  		overflow: hidden;
+  	}
+  	.label {
+  		border-bottom: 1px dotted #aaa;
+  		margin: 5px 0px;
+  		font-size: inherit;
+  	}
+  	input[type="number"], button {
+  		background-color: white;
+  		border: 1px solid grey;
+  		border-radius: 10px;
+  		padding: 0px 10px;
+		height: 54px;
+  		outline: none;
+  		font-size: inherit;
+  	}
+  	input[type="number"] {
+  		width: 70px;
+  	}
+  	button {
+  		cursor: pointer;
+  		white-space: nowrap;
+  		width: 100%;
+  	}
+  	.table {
+  		display: table;
+  		margin-top: 5px;
+  	}
+  	.table > div {
+  		display: table-row;
+  	}
+  	.table > div:not(:last-child) > div {
+  		border-bottom: 5px solid transparent;
+  	}
+  	.table > div > div {
+  		display: table-cell;
+  	}
+  	.table > div > div:not(:last-child) {
+  		border-right: 5px solid transparent;
+  	}
+  	.logbox {
+  		border: 1px solid grey;
+  		border-radius: 10px;
+  		padding: 10px;
+  	}
+  	.logbox textarea {
+  		font-size: 14px;
+  		border: none;
+  		outline: none;
+  		resize: none;
+  		width: 100%;
+  		min-height: 290px;
+  		box-sizing: border-box;
+  	}
+  </style>
+</head>
+<body>
+<div style="display: flex; flex-wrap: wrap;">
+	<div class="container">
+		<div class="label">Make your timelapse:</div>
+		<div id="stage2">
+			<div ><button onclick="captureStart();">Start</button></div>
+			<div class="table">
+				<div><div>Interval (sec): </div> <div><input id="interval" type="number" min="5" value="10" onchange="setMaxDelay();"></div></div>
+				<div><div>Download delay (sec):</div> <div><input id="delay" type="number" min="1" max="7" value="2"></div></div>
+			</div>
+		</div>
+		<div id="stage3" hidden>
+			<div><button onclick="captureStop();">Stop</button></div>
+		</div>
+	</div>
+	<div class="container">
+		<div class="label">Try:</div>
+		<div class="table" style="width: 100%;">
+			<div>
+				<div style="width: 50%;"><button onclick="userTakePhoto();">Take a photo</button></div>
+				<div style="width: 50%;"><button onclick="getLastFile();">Download last file</button></div>
+			</div>
+			<div>
+				<div style="width: 50%;"><button onclick="deleteAllFiles();">Delete all files</button></div>
+				<div style="width: 50%;"><button onclick="deleteLastFile();">Delete last file</button></div>
+			</div>
+		</div>
+		<div style="margin-top: 12px;">
+			View media files: <a target="_blank" href="http://10.5.5.9/videos/DCIM/100GOPRO/">/videos/DCIM/100GOPRO/</a>
+		</div>
+	</div>
+</div>
+
+<div class="container">
+	<div class="label">Log:</div>
+	<div class="logbox"><textarea id="log" readonly></textarea></div>
+</div>
+
+
+<script>
+const Host = "http://10.5.5.9";
+const MediaPath = Host + "/videos/DCIM/";
+const ApiPhotoMode = Host + "/gp/gpControl/command/mode?p=1";
+const ApiShutter = Host + "/gp/gpControl/command/shutter?p=1";
+const ApiMediaList = Host + "/gp/gpMediaList";
+const ApiDeleteFile = Host + "/gp/gpControl/command/storage/delete?p="; //100GOPRO/G0010198.JPG
+const ApiDeleteLastFile = Host + "/gp/gpControl/command/storage/delete/last";
+const ApiDeleteAllFiles = Host + "/gp/gpControl/command/storage/delete/all";
+
+var DownloadDelay = 1000;
+var DeleteDelay = 8000;
+
+function setMaxDelay() {
+	var delayValue = Math.max($("#interval")[0].value - 3, 1);
+	$("#delay").attr("max", delayValue);
+}
+
+function enterPhotoMode(callback) {
+	appendLog("Entering photo mode... ");
+	$.post(ApiPhotoMode, function() {
+		window.PhotoMode = true;
+		appendLog("OK.\n");
+		if (callback) { setTimeout(callback, 500); }
+	})
+	.fail(function() { appendLog("Fail!\n"); });
+}
+
+
+function captureStart() {
+	var intervalValue = $("#interval")[0].value;
+	var delayValue = $("#delay")[0].value;
+	if (!(intervalValue>=5)) { appendLog("Interval must be at least 5 seconds!\n"); return; }
+	if (!(delayValue>=1)) { appendLog("Download delay must be at least 1 second!\n"); return; }
+	if (delayValue > intervalValue - 3) { appendLog("Download delay must be at least 3 seconds less than Interval!\n"); return; }
+	if (!window.PhotoMode) { enterPhotoMode(captureStart); return; }
+	DownloadDelay = delayValue*1000; //Math.min(intervalValue * 300, 8000);
+	DeleteDelay = intervalValue*800 - DownloadDelay; //Math.min(intervalValue * 400, 8000);
+	console.log("interval =", intervalValue*1000, "DownloadDelay =", DownloadDelay, " DeleteDelay =", DeleteDelay);
+	window.CaptureTimerId = setInterval(captureSingleRun, intervalValue*1000);
+	appendLog("Started capture with " + intervalValue + " sec interval.\n");
+	$("#stage2").hide();
+	$("#stage3").show();
+}
+function captureSingleRun() {
+	takePhoto(function() {
+		setTimeout(function() {
+			getLastFile(function(path) {
+				setTimeout(function() { deleteFile(path); }, DeleteDelay);
+			});
+		}, DownloadDelay);
+	});
+}
+function captureStop() {
+	appendLog("Stopping capture... ");
+	clearInterval(window.CaptureTimerId);
+	appendLog("OK.\n");
+	$("#stage3").hide();
+	$("#stage2").show();
+}
+
+function userTakePhoto() {
+	if (!window.PhotoMode) { enterPhotoMode(takePhoto); return; }
+	takePhoto();
+}
+
+function takePhoto(callback) {
+	appendLog("Taking a photo... ");
+	$.post(ApiShutter, function() {
+		appendLog("OK.\n");
+		if (callback) { callback(); }
+	})
+	.fail(function() { appendLog("Fail!\n"); });
+}
+
+function getLastFile(callback) {
+	appendLog("Getting media list... ");
+	$.post(ApiMediaList, function(data) {
+		var dirCount = data.media.length;
+		if (!(dirCount > 0)) { appendLog("No folders!\n"); return; }
+		var lastDir = data.media[dirCount-1];
+		var fileCount = lastDir.fs.length;
+		if (!(fileCount > 0)) { appendLog("No files!\n"); return; }
+		var lastFile = lastDir.fs[fileCount-1];
+		var path = lastDir.d + "/" + lastFile.n;
+		appendLog("OK. Downloading file... ");
+		downloadURI(MediaPath + path, lastFile.n);
+		appendLog("OK.\n");
+		if (callback) { callback(path); }
+	})
+	.fail(function() { appendLog("Fail!\n"); });
+}
+
+function deleteLastFile() {
+	appendLog("Deleting last file... ");
+	$.post(ApiDeleteLastFile, function() { appendLog("OK.\n"); })
+	.fail(function() { appendLog("Fail!\n"); });
+}
+
+function deleteFile(path) {
+	appendLog("Deleting " + path + "... ");
+	$.post(ApiDeleteFile + path, function() { appendLog("OK.\n"); })
+	.fail(function() { appendLog("Fail!\n"); });
+}
+
+function deleteAllFiles() {
+	if (!window.confirm("This will format your GoPro's SD card! Do you want to do that?")) { return; }
+	appendLog("Deleting all files... ");
+	$.post(ApiDeleteAllFiles, function() { appendLog("OK.\n"); })
+	.fail(function() { appendLog("Fail!\n"); });
+}
+
+
+function appendLog(text) {
+	var log = $("#log");
+	log.append(text);
+	log.animate({scrollTop:log[0].scrollHeight - log.height()}, 200);
+}
+
+function downloadURI(uri, name) {
+	var link = document.createElement("a");
+	link.download = name;
+	link.href = uri;
+	link.target = "_blank"; // hello IE
+	document.body.appendChild(link);
+	link.click();
+	document.body.removeChild(link);
+	delete link;
+}
+
+</script>
+</body>
+</html>
